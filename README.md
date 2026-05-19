@@ -25,8 +25,6 @@ NoteEasy 不依赖后端服务，笔记内容完全保存在用户指定的本�
 
 ## 截图
 
-项目当前没有内置截图文件。如需在说明文档中展示界面，可在 `docs/` 或 `assets/` 中补充一张主界面截图，并在这里引用：
-
 ```markdown
 ![NoteEasy 主界面](docs/screenshot.png)
 ```
