@@ -25,9 +25,7 @@ NoteEasy 不依赖后端服务，笔记内容完全保存在用户指定的本�
 
 ## 截图
 
-```markdown
-![NoteEasy 主界面](docs/screenshot.png)
-```
+![NoteEasy 主界面](./docs/screenshot.png)
 
 ## 项目结构
 
@@ -213,5 +211,4 @@ npm run dist:linux # 构建 Linux 包
 - 左侧文件栏和右侧大纲栏支持折叠与拖拽调宽。
 - 支持浅色和深色主题。
 - 支持保存默认仓库路径、主题、编号模式、最后打开文件和滚动位置。
-
 
