@@ -4,7 +4,7 @@
   "description": "NoteEasy desktop Markdown notes app built from MarkEasy.",
   "main": "main.js",
   "author": "",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "private": true,
   "scripts": {
     "start": "electron .",
