@@ -225,22 +225,49 @@ function registerIpcHandlers() {
 
   ipcMain.handle('noteeasy:list-tree', async (event, rootPath) => {
     if (!rootPath) return null;
-    startRepositoryWatcher(rootPath);
-    return buildTree(rootPath);
+    try {
+      startRepositoryWatcher(rootPath);
+      return await buildTree(rootPath);
+    } catch (error) {
+      if (error && error.code === 'ENOENT') {
+        stopRepositoryWatcher();
+        const settings = await readSettings();
+        if (settings.rootPath === rootPath) {
+          await writeSettings({ rootPath: '', lastFilePath: '', lastPosition: null });
+        }
+        return null;
+      }
+      throw error;
+    }
   });
 
   ipcMain.handle('noteeasy:read-note', async (event, filePath, rootPath) => {
     await assertInsideRoot(filePath, rootPath);
     if (!isMarkdownFile(filePath)) throw new Error('仅支持打开 Markdown 文件');
-    const stat = await fs.stat(filePath);
-    const content = await fs.readFile(filePath, 'utf8');
-    return {
-      path: filePath,
-      name: path.basename(filePath),
-      content,
-      modifiedAt: stat.mtimeMs,
-      size: stat.size
-    };
+    try {
+      const stat = await fs.stat(filePath);
+      const content = await fs.readFile(filePath, 'utf8');
+      return {
+        path: filePath,
+        name: path.basename(filePath),
+        content,
+        modifiedAt: stat.mtimeMs,
+        size: stat.size
+      };
+    } catch (error) {
+      if (error && error.code === 'ENOENT') {
+        const settings = await readSettings();
+        if (settings.lastFilePath === filePath) {
+          await writeSettings({ lastFilePath: '', lastPosition: null });
+        }
+        return {
+          missing: true,
+          path: filePath,
+          name: path.basename(filePath)
+        };
+      }
+      throw error;
+    }
   });
 
   ipcMain.handle('noteeasy:save-note', async (event, filePath, content, rootPath) => {

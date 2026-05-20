@@ -1,3 +1,4 @@
+<!-- noteeasy:numbering=mode3 -->
 # Markdown 编辑器功能测试文档
 
 ## 产品概览

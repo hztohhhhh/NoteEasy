@@ -2563,7 +2563,8 @@
           preserveNode(node, `\n\n${cleanHtmlBlock(node)}\n\n`);
         });
         clone.querySelectorAll('table').forEach((node) => {
-          preserveNode(node, `\n\n${cleanHtmlBlock(node)}\n\n`);
+          const markdownTable = tableToMarkdown(node);
+          preserveNode(node, markdownTable ? `\n\n${markdownTable}\n\n` : `\n\n${cleanHtmlBlock(node)}\n\n`);
         });
         let markdown = turndownService.turndown(clone);
         preserved.forEach((item) => {
@@ -2571,6 +2572,80 @@
         });
         markdown = markdown.replace(/\n{3,}/g, '\n\n').trim();
         return markdown ? `${markdown}\n` : '';
+      }
+
+      function tableToMarkdown(table) {
+        const rows = Array.from(table.rows || []);
+        if (!rows.length) return '';
+
+        const cells = Array.from(table.querySelectorAll('th,td'));
+        if (!cells.length) return '';
+        if (cells.some((cell) => cell.colSpan > 1 || cell.rowSpan > 1)) return '';
+
+        const columnCount = Math.max(...rows.map((row) => row.cells.length));
+        if (!columnCount) return '';
+
+        const firstRow = rows[0];
+        const headerRow = table.tHead && table.tHead.rows.length
+          ? table.tHead.rows[0]
+          : (Array.from(firstRow.cells).some((cell) => cell.tagName.toLowerCase() === 'th') ? firstRow : null);
+        if (!headerRow) return '';
+
+        const headerCells = normalizeMarkdownTableRow(headerRow, columnCount);
+        const separators = Array.from({ length: columnCount }, (_, index) => getMarkdownTableSeparator(headerRow.cells[index]));
+        const bodyRows = rows.filter((row) => row !== headerRow).map((row) => normalizeMarkdownTableRow(row, columnCount));
+
+        return [
+          formatMarkdownTableRow(headerCells),
+          formatMarkdownTableRow(separators),
+          ...bodyRows.map(formatMarkdownTableRow)
+        ].join('\n');
+      }
+
+      function normalizeMarkdownTableRow(row, columnCount) {
+        const cells = Array.from(row.cells).map((cell) => markdownTableCellContent(cell));
+        while (cells.length < columnCount) {
+          cells.push('');
+        }
+        return cells.slice(0, columnCount);
+      }
+
+      function markdownTableCellContent(cell) {
+        if (!cell) return '';
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = cell.innerHTML;
+        wrapper.querySelectorAll('[contenteditable], [data-outline-id], [data-outline-number]').forEach((node) => {
+          node.removeAttribute('contenteditable');
+          node.removeAttribute('data-outline-id');
+          node.removeAttribute('data-outline-number');
+        });
+        wrapper.querySelectorAll('.code-copy, .node-edit-button').forEach((node) => node.remove());
+        cleanTableEditingState(wrapper);
+
+        const markdown = turndownService.turndown(wrapper).trim()
+          .replace(/\r\n/g, '\n')
+          .replace(/[ \t]*\n+[ \t]*/g, '<br>');
+        return escapeMarkdownTablePipes(markdown);
+      }
+
+      function escapeMarkdownTablePipes(text) {
+        return String(text || '').replace(/\\*\|/g, (match) => {
+          const slashCount = match.length - 1;
+          return slashCount % 2 === 1 ? match : `${'\\'.repeat(slashCount)}\\|`;
+        });
+      }
+
+      function getMarkdownTableSeparator(cell) {
+        if (!cell) return '---';
+        const align = (cell.getAttribute('align') || cell.style.textAlign || '').trim().toLowerCase();
+        if (align === 'center') return ':---:';
+        if (align === 'right' || align === 'end') return '---:';
+        if (align === 'left' || align === 'start') return ':---';
+        return '---';
+      }
+
+      function formatMarkdownTableRow(cells) {
+        return `| ${cells.join(' | ')} |`;
       }
 
       function cleanHtmlBlock(node) {
@@ -2634,11 +2709,13 @@
         try {
           const payload = await readLayoutExportPayload(params);
           if (payload && typeof payload.content === 'string') {
+            const content = stripNumberingMarker(payload.content);
+            detectNumberingMode(payload.content);
             currentFileName = payload.name || sampleName;
-            input.value = payload.content;
+            input.value = content;
             fileName.textContent = currentFileName;
             fileDetail.textContent = 'PDF 布局导出';
-            sizeText.textContent = formatBytes(new Blob([payload.content]).size);
+            sizeText.textContent = formatBytes(new Blob([content]).size);
             updatedText.textContent = '已加载';
           }
 
@@ -2820,7 +2897,7 @@
             const position = settings.lastPosition && settings.lastPosition.filePath === settings.lastFilePath
               ? settings.lastPosition
               : null;
-            await openNoteByPath(settings.lastFilePath, { pin: true, preview: false, position });
+            await openNoteByPath(settings.lastFilePath, { pin: true, preview: false, position, silentMissing: true });
             if (position && ['preview', 'source'].includes(position.view)) {
               await setView(position.view);
             }
@@ -3225,6 +3302,18 @@
           }
 
           const note = await noteEasyApi.readNote(path, rootPath);
+          if (!note || note.missing) {
+            if (noteEasyApi && (!note || note.missing)) {
+              noteEasyApi.setSettings({ lastFilePath: '', lastPosition: null }).catch(() => {});
+            }
+            if (!options.silentMissing) {
+              showToast('文件不存在，已从最近打开中移除');
+            }
+            renderFileTree();
+            return;
+          }
+          const noteNumberingMode = detectNumberingMode(note.content);
+          const noteContent = stripNumberingMarker(note.content);
           const replacement = options.preview
             ? tabs.find((tab) => !tab.pinned && !tab.dirty)
             : null;
@@ -3236,7 +3325,8 @@
           Object.assign(tab, {
             path: note.path,
             name: note.name,
-            content: note.content,
+            content: noteContent,
+            numberingMode: noteNumberingMode || numberingModeSelect.value,
             dirty: false,
             pinned: Boolean(options.pin),
             preview: !options.pin,
@@ -3267,8 +3357,12 @@
         }
         currentFilePath = tab.path || '';
         currentFileName = tab.name || sampleName;
-        input.value = tab.content || '';
-        detectNumberingMode(input.value);
+        input.value = stripNumberingMarker(tab.content || '');
+        if (isValidNumberingMode(tab.numberingMode)) {
+          applyNumberingMode(tab.numberingMode);
+        } else {
+          tab.numberingMode = detectNumberingMode(tab.content) || numberingModeSelect.value;
+        }
         fileName.textContent = currentFileName;
         fileDetail.textContent = tab.path || '浏览器文件';
         sizeText.textContent = formatBytes(new Blob([input.value]).size);
@@ -3334,6 +3428,7 @@
         const tab = getActiveTab();
         if (!tab) return;
         tab.content = input.value;
+        tab.numberingMode = numberingModeSelect.value;
         tab.previewScrollTop = previewScroll ? previewScroll.scrollTop : 0;
         tab.sourceScrollTop = input ? input.scrollTop : 0;
         if (currentView === 'preview' && !isRendering) {
@@ -3447,6 +3542,7 @@
           tab.preview = false;
         }
         tab.content = input.value;
+        tab.numberingMode = numberingModeSelect.value;
         tab.dirty = true;
         if (options.preservePreview && currentView === 'preview' && !isRendering) {
           tab.previewHtml = preview.innerHTML;
@@ -3462,6 +3558,7 @@
         const tab = getActiveTab();
         if (!tab) return;
         tab.content = input.value;
+        tab.numberingMode = numberingModeSelect.value;
         tab.dirty = false;
         if (fileMeta) {
           tab.modifiedAt = fileMeta.modifiedAt;
@@ -3478,10 +3575,10 @@
           return false;
         }
         try {
-          input.value = ensureNumberingMarker(input.value, numberingModeSelect.value);
           captureActiveTabState();
           statusText.textContent = '保存中';
-          const result = await noteEasyApi.saveNote(currentFilePath, input.value, rootPath);
+          const savedMarkdown = ensureNumberingMarker(input.value, numberingModeSelect.value);
+          const result = await noteEasyApi.saveNote(currentFilePath, savedMarkdown, rootPath);
           window.clearTimeout(autoSaveTimer);
           markActiveTabSaved(result);
           fileDetail.textContent = currentFilePath;
@@ -3552,14 +3649,25 @@
         scheduleAutoSave();
       }
 
+      function isValidNumberingMode(mode) {
+        return ['mode1', 'mode2', 'mode3', 'none'].includes(mode);
+      }
+
+      function applyNumberingMode(mode) {
+        if (!isValidNumberingMode(mode)) return;
+        numberingModeSelect.value = mode;
+        localStorage.setItem('markdown-viewer-numbering-mode', mode);
+      }
+
       function detectNumberingMode(source) {
         const match = String(source || '').match(NOTEASY_NUMBERING_MARKER);
-        if (!match) return;
+        if (!match) return '';
         const mode = match[1];
-        if (['mode1', 'mode2', 'mode3', 'none'].includes(mode)) {
-          numberingModeSelect.value = mode;
-          localStorage.setItem('markdown-viewer-numbering-mode', mode);
+        if (isValidNumberingMode(mode)) {
+          applyNumberingMode(mode);
+          return mode;
         }
+        return '';
       }
 
       function persistNumberingMode(mode) {
@@ -3567,8 +3675,11 @@
         if (noteEasyApi) {
           noteEasyApi.setSettings({ numberingMode: mode }).catch(() => {});
         }
+        const tab = getActiveTab();
+        if (tab) {
+          tab.numberingMode = mode;
+        }
         if (input.value.trim()) {
-          input.value = ensureNumberingMarker(input.value, mode);
           markActiveTabDirty();
           scheduleAutoSave();
           scheduleRender(0);
@@ -3577,8 +3688,12 @@
 
       function ensureNumberingMarker(source, mode) {
         const marker = `<!-- noteeasy:numbering=${mode} -->\n`;
-        const value = String(source || '').replace(NOTEASY_NUMBERING_MARKER, '');
+        const value = stripNumberingMarker(source);
         return `${marker}${value.replace(/^\s+/, '')}`;
+      }
+
+      function stripNumberingMarker(source) {
+        return String(source || '').replace(NOTEASY_NUMBERING_MARKER, '');
       }
 
       function updateTabsAfterRename(oldPath, nextPath, nextName) {
@@ -5498,16 +5613,18 @@
         const reader = new FileReader();
         reader.onload = () => {
           const content = String(reader.result || '');
+          const numberingMode = detectNumberingMode(content);
+          const editorContent = stripNumberingMarker(content);
           captureActiveTabState();
           currentFileName = file.name;
           currentFilePath = '';
-          input.value = content;
-          detectNumberingMode(content);
+          input.value = editorContent;
           const tab = {
             id: `local-${Date.now()}-${untitledCounter++}`,
             path: '',
             name: file.name,
-            content,
+            content: editorContent,
+            numberingMode: numberingMode || numberingModeSelect.value,
             dirty: false,
             pinned: true,
             preview: false,
@@ -5547,7 +5664,7 @@
 
       async function renderMarkdown() {
         const renderId = ++lastRenderId;
-        const source = input.value;
+        const source = stripNumberingMarker(input.value);
         isRendering = true;
         clearTableSelection();
         closeTableToolbar();
@@ -5792,7 +5909,7 @@ ${indentHtml(clone.innerHTML, 4)}
 
       async function exportMarkdown() {
         await flushPreviewEdits();
-        const markdown = noteEasyApi ? ensureNumberingMarker(input.value, numberingModeSelect.value) : input.value;
+        const markdown = stripNumberingMarker(input.value);
         if (!markdown.trim()) {
           showToast('没有可导出的 Markdown 内容');
           return;
