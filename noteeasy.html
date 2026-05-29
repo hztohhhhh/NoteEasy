@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NoteEasy</title>
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="markcom.css">
+  <link rel="stylesheet" href="noteeasy.css">
+</head>
+<body>
+  <div class="app preview-mode" id="noteeasyApp">
+    <header class="toolbar">
+      <div class="toolbar-primary">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true"><img src="assets/icon.svg" alt=""></div>
+          <div class="file-meta">
+            <div class="file-name" id="fileName">NoteEasy</div>
+            <div class="file-detail" id="fileDetail">未加载文件</div>
+          </div>
+        </div>
+        <input type="file" id="fileInput" accept=".md,.markdown,.mdown,.mkd,.txt,text/markdown,text/plain" hidden>
+        <button type="button" class="primary" id="openFile" title="打开 Markdown 文件">
+          <i data-lucide="folder-open"></i><span>打开</span>
+        </button>
+        <button type="button" id="openRepository" title="选择笔记仓库">
+          <i data-lucide="folder-tree"></i><span>仓库</span>
+        </button>
+        <button type="button" id="explorerToggle" title="显示或隐藏文件目录树">
+          <i data-lucide="panel-left"></i><span>目录</span>
+        </button>
+      </div>
+
+      <div class="toolbar-actions">
+        <button type="button" id="exportHtml" title="导出 HTML 文件">
+          <i data-lucide="file-code-2"></i><span>HTML</span>
+        </button>
+        <button type="button" id="exportPdf" title="导出 A4 PDF 文件">
+          <i data-lucide="file-down"></i><span>PDF</span>
+        </button>
+        <button type="button" id="exportMd" title="导出 Markdown 文件">
+          <i data-lucide="file-text"></i><span>MD</span>
+        </button>
+        <button type="button" id="outlineToggle" title="显示或隐藏大纲">
+          <i data-lucide="list-tree"></i><span>大纲</span>
+        </button>
+        <select id="numberingMode" class="toolbar-select" title="标题编号方式" aria-label="标题编号方式">
+          <option value="mode1">按章节</option>
+          <option value="mode2">按大写</option>
+          <option value="mode3">自动序号</option>
+          <option value="none">不编号</option>
+        </select>
+        <div class="segmented" role="group" aria-label="编辑模式">
+          <button type="button" data-view="preview" class="active" title="预览编辑"><i data-lucide="eye"></i><span>预览</span></button>
+          <button type="button" data-view="source" title="源码编辑"><i data-lucide="braces"></i><span>源码</span></button>
+        </div>
+        <button type="button" class="icon-only" id="themeToggle" title="切换主题">
+          <i data-lucide="moon"></i>
+        </button>
+      </div>
+    </header>
+
+    <main class="workspace" id="workspace">
+      <aside class="pane explorer-pane" aria-label="文件目录树">
+        <div class="pane-head">
+          <div class="pane-title"><i data-lucide="folder-tree"></i><span>文件</span></div>
+          <div class="pane-tools">
+            <button type="button" id="newNoteButton" title="新建笔记"><i data-lucide="file-plus-2"></i></button>
+            <button type="button" id="newFolderButton" title="新建文件夹"><i data-lucide="folder-plus"></i></button>
+            <button type="button" id="refreshTreeButton" title="刷新目录"><i data-lucide="refresh-cw"></i></button>
+            <button type="button" id="treeSearchToggle" title="显示或隐藏搜索"><i data-lucide="search"></i></button>
+          </div>
+        </div>
+        <div class="repository-search">
+          <input id="treeSearch" type="search" placeholder="搜索笔记或文件名" autocomplete="off">
+        </div>
+        <div class="file-tree" id="fileTree">
+          <div class="file-tree-empty">请选择一个文件夹作为笔记仓库</div>
+        </div>
+      </aside>
+      <div class="explorer-resizer" id="explorerResizer" role="separator" aria-label="调整文件目录宽度" aria-orientation="vertical"></div>
+
+      <section class="document-frame-pane" aria-label="Markdown 编辑器">
+        <div id="markcom-root" data-markcom-root></div>
+      </section>
+    </main>
+
+    <footer class="statusbar">
+      <div class="status-list">
+        <span id="noteStatusText">就绪</span>
+        <span id="currentFileText">未加载文件</span>
+        <span id="currentPathText">本地页面</span>
+      </div>
+      <div class="status-list status-right">
+        <span id="noteSizeText">0 KB</span>
+        <span id="statsText">0 标题 · 0 代码块 · 0 图表</span>
+        <span id="noteUpdatedText">本地页面</span>
+      </div>
+      <div class="status-message" id="noteMessageText"></div>
+    </footer>
+  </div>
+
+  <div class="toast" id="noteToast"></div>
+
+  <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [['$', '$'], ['\\(', '\\)']],
+        displayMath: [['$$', '$$'], ['\\[', '\\]']],
+        processEscapes: true,
+        processEnvironments: true
+      },
+      svg: {
+        fontCache: 'none'
+      },
+      options: {
+        skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
+        ignoreHtmlClass: 'mermaid'
+      },
+      startup: {
+        typeset: false
+      }
+    };
+    window.MarkComConfig = {
+      host: 'noteeasy',
+      embedded: true
+    };
+  </script>
+  <script src="vendor/markdown-it.min.js"></script>
+  <script src="vendor/highlight-common.min.js"></script>
+  <script src="vendor/mermaid.min.js"></script>
+  <script src="vendor/echarts.min.js"></script>
+  <script src="vendor/abcjs-basic-min.js"></script>
+  <script src="vendor/tex-svg.js"></script>
+  <script src="vendor/pdfmake.min.js"></script>
+  <script src="vendor/pdfmake-chinese-vfs.js"></script>
+  <script src="vendor/turndown.js"></script>
+  <script src="vendor/turndown-plugin-gfm.js"></script>
+  <script src="vendor/lucide.min.js"></script>
+  <script src="markdata.js"></script>
+  <script src="markcom.js"></script>
+  <script src="noteeasy.js"></script>
+</body>
+</html>

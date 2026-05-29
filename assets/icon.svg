@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="NoteEasy">
+  <rect width="256" height="256" rx="46" fill="#ffffff"/>
+  <path d="M26 190V66c0-18 21-27 34-15l51 49 51-49c13-12 34-3 34 15v124c0 12-10 22-22 22s-22-10-22-22v-72l-28 27c-8 8-19 8-27 0l-28-27v72c0 12-10 22-22 22s-21-10-21-22z" fill="#1a73e8"/>
+  <g transform="rotate(38 176 93)">
+    <rect x="158" y="19" width="34" height="116" rx="8" fill="#1a73e8"/>
+    <rect x="164" y="29" width="22" height="92" rx="4" fill="#ffffff"/>
+    <rect x="158" y="19" width="34" height="24" rx="8" fill="#1a73e8"/>
+    <path d="M158 135h34l-17 36z" fill="#1a73e8"/>
+    <path d="M169 150h12l-6 13z" fill="#ffffff"/>
+  </g>
+</svg>

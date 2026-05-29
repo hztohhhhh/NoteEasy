@@ -1,0 +1,14 @@
+﻿node_modules/
+release/
+dist/
+out/
+build/
+
+*.exe
+*.asar
+*.zip
+*.7z
+*.rar
+*.msi
+*.dmg
+*.AppImage
