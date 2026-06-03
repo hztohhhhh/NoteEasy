@@ -17,7 +17,9 @@
   };
 
   const FILE_SOURCE_TYPES = {
+    workspace: 'workspace',
     local: 'local',
+    git: 'git',
     network: 'network',
     storage: 'storage'
   };
@@ -599,6 +601,145 @@
     }
   }
 
+  const WORKSPACE_SOURCE_OPERATIONS = [
+    'list',
+    'read',
+    'save',
+    'createFile',
+    'createFolder',
+    'rename',
+    'delete',
+    'move',
+    'show',
+    'watch'
+  ];
+
+  class WorkspaceSourceAdapter extends EventBus {
+    constructor(options = {}) {
+      super();
+      this.type = normalizeFileSource(options.type || FILE_SOURCE_TYPES.local);
+      this.id = options.id || createId(this.type);
+      this.name = options.name || this.type;
+      this.rootPath = options.rootPath || '';
+      this.url = options.url || '';
+      this.writable = options.writable !== false && (this.type === FILE_SOURCE_TYPES.local || this.type === FILE_SOURCE_TYPES.git);
+      this.capabilities = Object.assign({
+        list: true,
+        read: true,
+        save: this.writable,
+        createFile: this.writable,
+        createFolder: this.writable,
+        rename: this.writable,
+        delete: this.writable,
+        move: this.writable,
+        show: this.type !== FILE_SOURCE_TYPES.network,
+        watch: this.writable
+      }, options.capabilities || {});
+      this.meta = Object.assign({}, options.meta || {});
+    }
+
+    describe() {
+      return {
+        id: this.id,
+        type: this.type,
+        name: this.name,
+        rootPath: this.rootPath,
+        url: this.url,
+        writable: this.writable,
+        capabilities: Object.assign({}, this.capabilities),
+        meta: Object.assign({}, this.meta)
+      };
+    }
+
+    assertCapability(operation) {
+      if (!this.capabilities[operation]) {
+        throw new Error(`Workspace source does not support ${operation}.`);
+      }
+    }
+
+    async list() {
+      this.assertCapability('list');
+      throw new Error('WorkspaceSourceAdapter.list must be implemented by the host.');
+    }
+
+    async read() {
+      this.assertCapability('read');
+      throw new Error('WorkspaceSourceAdapter.read must be implemented by the host.');
+    }
+
+    async save() {
+      this.assertCapability('save');
+      throw new Error('WorkspaceSourceAdapter.save must be implemented by the host.');
+    }
+
+    async createFile() {
+      this.assertCapability('createFile');
+      throw new Error('WorkspaceSourceAdapter.createFile must be implemented by the host.');
+    }
+
+    async createFolder() {
+      this.assertCapability('createFolder');
+      throw new Error('WorkspaceSourceAdapter.createFolder must be implemented by the host.');
+    }
+
+    async rename() {
+      this.assertCapability('rename');
+      throw new Error('WorkspaceSourceAdapter.rename must be implemented by the host.');
+    }
+
+    async delete() {
+      this.assertCapability('delete');
+      throw new Error('WorkspaceSourceAdapter.delete must be implemented by the host.');
+    }
+
+    async move() {
+      this.assertCapability('move');
+      throw new Error('WorkspaceSourceAdapter.move must be implemented by the host.');
+    }
+
+    async show() {
+      this.assertCapability('show');
+      throw new Error('WorkspaceSourceAdapter.show must be implemented by the host.');
+    }
+
+    watch() {
+      this.assertCapability('watch');
+      return () => {};
+    }
+  }
+
+  class WorkspaceSourceRegistry {
+    constructor() {
+      this.factories = new Map();
+    }
+
+    register(type, factory) {
+      const sourceType = normalizeFileSource(type);
+      if (typeof factory !== 'function') {
+        throw new Error('Workspace source factory must be a function.');
+      }
+      this.factories.set(sourceType, factory);
+      return this;
+    }
+
+    create(type, options = {}) {
+      const sourceType = normalizeFileSource(type);
+      const factory = this.factories.get(sourceType);
+      if (!factory) {
+        return new WorkspaceSourceAdapter(Object.assign({}, options, { type: sourceType }));
+      }
+      return factory(Object.assign({}, options, { type: sourceType }));
+    }
+
+    has(type) {
+      return this.factories.has(normalizeFileSource(type));
+    }
+
+    types() {
+      return Array.from(this.factories.keys());
+    }
+  }
+
   function parseMarkdown(markdown, documentModel) {
     const source = String(markdown || '');
     const lines = source.split(/\r?\n/);
@@ -820,6 +961,9 @@
     LocalDirectoryFileAdapter,
     NetworkDirectoryFileAdapter,
     StorageDirectoryFileAdapter,
+    WorkspaceSourceAdapter,
+    WorkspaceSourceRegistry,
+    workspaceSourceOperations: WORKSPACE_SOURCE_OPERATIONS.slice(),
     parseMarkdown,
     blockTypes: DEFAULT_BLOCK_TYPES,
     fileSources: FILE_SOURCE_TYPES

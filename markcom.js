@@ -219,7 +219,14 @@
       const rootPath = String(rootNode.path || rootNode.url || '');
       if (rootPath && rootPath !== this.lastRootPath) {
         this.lastRootPath = rootPath;
-        this.expandedPaths = new Set([rootPath]);
+        const initialExpanded = [rootPath];
+        if (rootPath === 'workspace:' && Array.isArray(rootNode.children)) {
+          rootNode.children.forEach((child) => {
+            const childPath = String(child.path || child.url || '');
+            if (childPath) initialExpanded.push(childPath);
+          });
+        }
+        this.expandedPaths = new Set(initialExpanded);
       }
       const query = String(this.getQuery() || '').trim().toLowerCase();
       const html = renderDirectoryNode(rootNode, {
@@ -312,7 +319,12 @@
     if (!matches) return '';
     const active = context.activePath && context.activePath === path ? ' active' : '';
     const selected = context.selectedPath && context.selectedPath === path ? ' selected' : '';
-    const itemIcon = type === 'folder' ? 'folder' : 'file-text';
+    const meta = node.meta || {};
+    const sourceType = node.source || meta.sourceType || '';
+    let itemIcon = type === 'folder' ? 'folder' : 'file-text';
+    if (path === 'workspace:' || sourceType === 'workspace') itemIcon = 'layout-dashboard';
+    if (type === 'folder' && meta.workspaceRoot && sourceType === 'git') itemIcon = 'git-branch';
+    if (type === 'folder' && meta.workspaceRoot && sourceType === 'network') itemIcon = 'cloud';
     const row = `
       <button type="button" class="tree-row ${type}${active}${selected}${expanded ? ' expanded' : ''}" data-path="${escapeViewAttr(path)}" data-type="${escapeViewAttr(type)}" style="padding-left:${8 + context.depth * 14}px">
         <span class="tree-caret"><i data-lucide="chevron-right"></i></span>
@@ -458,6 +470,8 @@ C D E F | G A B c |`;
       let pdfFontFile = '';
       let pdfExportWarnings = [];
       let currentFileName = '';
+      let currentFilePath = '';
+      let currentWorkspaceRoot = '';
       let currentView = 'preview';
       let lastRenderId = 0;
       let renderTimer = 0;
@@ -555,7 +569,7 @@ C D E F | G A B c |`;
       md.renderer.rules.image = (tokens, idx, options, env, self) => {
         const token = tokens[idx];
         const source = token.attrGet('src') || '';
-        const resolved = resolveLocalImageSource(source);
+        const resolved = resolveDisplayImageSource(source);
         if (resolved && resolved !== source) {
           token.attrSet('data-md-src', source);
           token.attrSet('src', resolved);
@@ -697,6 +711,7 @@ C D E F | G A B c |`;
         outlineToggle.addEventListener('click', toggleOutline);
         outlineResizer.addEventListener('pointerdown', startOutlineResize);
         if (hostTabs) {
+          hostTabs.addEventListener('mousedown', handleHostTabsMouseDown);
           hostTabs.addEventListener('click', handleHostTabsClick);
           hostTabs.addEventListener('dblclick', handleHostTabsDoubleClick);
         }
@@ -951,7 +966,8 @@ C D E F | G A B c |`;
           preserveNode(node, `\n\n${node.dataset.md}\n\n`);
         });
         clone.querySelectorAll('.image-block').forEach((node) => {
-          preserveNode(node, `\n\n${cleanHtmlBlock(node)}\n\n`);
+          const markdownImage = imageBlockToMarkdown(node);
+          preserveNode(node, markdownImage ? `\n\n${markdownImage}\n\n` : `\n\n${cleanHtmlBlock(node)}\n\n`);
         });
         clone.querySelectorAll('table').forEach((node) => {
           const markdownTable = tableToMarkdown(node);
@@ -963,6 +979,16 @@ C D E F | G A B c |`;
         });
         markdown = markdown.replace(/\n{3,}/g, '\n\n').trim();
         return markdown ? `${markdown}\n` : '';
+      }
+
+      function imageBlockToMarkdown(block) {
+        const image = block && block.querySelector ? block.querySelector('img') : null;
+        if (!image) return '';
+        const src = getMarkdownImageSource(image);
+        if (!src || /^data:image\//i.test(src)) return '';
+        const alt = cleanMarkdownInline(image.getAttribute('alt') || '');
+        const title = cleanMarkdownInline(image.getAttribute('title') || '');
+        return title ? `![${alt}](${src} "${title}")` : `![${alt}](${src})`;
       }
 
       function tableToMarkdown(table) {
@@ -1195,7 +1221,11 @@ C D E F | G A B c |`;
       }
 
       function hydrateLayout() {
-        const width = localStorage.getItem('markdown-viewer-outline-width') || '30%';
+        const storedWidth = localStorage.getItem('markdown-viewer-outline-width') || '';
+        const isNoteEasyEmbedded = app.classList.contains('markcom-embedded') && app.classList.contains('markcom-host-noteeasy');
+        const width = isNoteEasyEmbedded && /%$/.test(storedWidth.trim())
+          ? '280px'
+          : (storedWidth || '280px');
         document.documentElement.style.setProperty('--outline-width', width);
         const collapsed = localStorage.getItem('markdown-viewer-outline-collapsed') === 'true';
         app.classList.toggle('outline-collapsed', collapsed);
@@ -1237,7 +1267,7 @@ C D E F | G A B c |`;
             <div class="host-tab${active}${dirty}${previewTab}" data-tab-id="${escapeHtml(id)}" title="${escapeHtml(title)}">
               <button type="button" class="host-tab-main" data-tab-select="${escapeHtml(id)}">
               <i data-lucide="${tab.pinned ? 'pin' : 'circle'}"></i>
-              <span>${escapeHtml(title)}</span>
+              <span class="host-tab-title">${escapeHtml(title)}</span>
               ${tab.dirty ? '<span class="tab-dot" aria-hidden="true"></span>' : ''}
               </button>
               <button type="button" class="host-tab-close" data-tab-close="${escapeHtml(id)}" title="关闭页签"><i data-lucide="x"></i></button>
@@ -1256,8 +1286,21 @@ C D E F | G A B c |`;
         }
         const tabButton = event.target.closest('[data-tab-select]');
         if (tabButton) {
+          if (event.detail > 1) {
+            const tab = event.target.closest('[data-tab-id]');
+            if (tab) postHostMessage('markcom:tabPin', { tabId: tab.dataset.tabId || '' });
+            return;
+          }
           postHostMessage('markcom:tabSelect', { tabId: tabButton.dataset.tabSelect || '' });
         }
+      }
+
+      function handleHostTabsMouseDown(event) {
+        if (event.detail < 2 || event.target.closest('[data-tab-close]')) return;
+        const tab = event.target.closest('[data-tab-id]');
+        if (!tab) return;
+        event.preventDefault();
+        postHostMessage('markcom:tabPin', { tabId: tab.dataset.tabId || '' });
       }
 
       function handleHostTabsDoubleClick(event) {
@@ -1508,7 +1551,7 @@ C D E F | G A B c |`;
         const image = findContextImage();
         editingImageBlock = image ? image.closest('.image-block') || image.parentElement : null;
         getElement('imageTitle').textContent = image ? '编辑图像' : '插入图像';
-        imageUrl.value = image ? image.getAttribute('src') || '' : '';
+        imageUrl.value = image ? getMarkdownImageSource(image) : '';
         imageAlt.value = image ? image.getAttribute('alt') || '' : '';
         imageWidth.value = image ? parseImageWidth(image) : '70';
         imageAlign.value = editingImageBlock ? parseImageAlign(editingImageBlock) : 'center';
@@ -1524,19 +1567,27 @@ C D E F | G A B c |`;
         editingImageBlock = null;
       }
 
-      function loadLocalImage() {
+      async function loadLocalImage() {
         const [file] = imageFile.files || [];
         if (!file) return;
-        const reader = new FileReader();
-        reader.onload = () => {
-          imageUrl.value = String(reader.result || '');
+        const localPath = getFileSystemPath(file);
+        if (localPath) {
+          imageUrl.value = getMarkdownImagePath(localPath);
           if (!imageAlt.value.trim()) {
             imageAlt.value = file.name.replace(/\.[^.]+$/, '') || '图片';
           }
-          showToast('本地图片已读取');
-        };
-        reader.onerror = () => showToast('本地图片读取失败');
-        reader.readAsDataURL(file);
+          showToast('本地图片已按路径引用');
+          return;
+        }
+        try {
+          imageUrl.value = await readFileAsDataUrl(file);
+          if (!imageAlt.value.trim()) {
+            imageAlt.value = file.name.replace(/\.[^.]+$/, '') || '图片';
+          }
+          showToast('浏览器无法取得本地路径，已使用内联图片');
+        } catch (error) {
+          showToast(error.message || '本地图片读取失败');
+        }
       }
 
       function confirmImage() {
@@ -1583,7 +1634,10 @@ C D E F | G A B c |`;
       }
 
       function buildImageHtml(url, alt, width, align) {
-        return `<p class="image-block image-align-${escapeHtml(align)}"><img src="${escapeHtml(url)}" alt="${escapeHtml(alt)}" style="width:${width}%;max-width:100%;height:auto;"></p>`;
+        const source = normalizeMarkdownImagePath(url);
+        const displaySource = resolveDisplayImageSource(source);
+        const mdSourceAttr = displaySource !== source ? ` data-md-src="${escapeHtml(source)}"` : '';
+        return `<p class="image-block image-align-${escapeHtml(align)}"><img src="${escapeHtml(displaySource)}"${mdSourceAttr} alt="${escapeHtml(alt)}" style="width:${width}%;max-width:100%;height:auto;"></p>`;
       }
 
       function openFlowchartDialog() {
@@ -3275,7 +3329,7 @@ C D E F | G A B c |`;
           filter: (node) => node.nodeName === 'IMG' && node.getAttribute('data-md-src'),
           replacement: (content, node) => {
             const alt = cleanMarkdownInline(node.getAttribute('alt') || '');
-            const src = node.getAttribute('data-md-src') || node.getAttribute('src') || '';
+            const src = getMarkdownImageSource(node);
             const title = node.getAttribute('title');
             return title ? `![${alt}](${src} "${cleanMarkdownInline(title)}")` : `![${alt}](${src})`;
           }
@@ -3462,6 +3516,13 @@ C D E F | G A B c |`;
 
       async function readMarkdownFile(file) {
         try {
+          const systemPath = getFileSystemPath(file);
+          if (systemPath) {
+            currentFilePath = systemPath;
+            currentMarkdownDirectory = getDirectoryName(systemPath);
+          } else {
+            currentFilePath = '';
+          }
           const raw = await readFileAsText(file);
           const normalized = normalizeLoadedMarkdown(raw);
           currentFileName = file.name;
@@ -3535,6 +3596,20 @@ C D E F | G A B c |`;
         return fileRelativePaths.get(file) || file.webkitRelativePath || file.name || '';
       }
 
+      function getFileSystemPath(file) {
+        if (!file) return '';
+        const api = window.noteEasyApi;
+        if (api && typeof api.getPathForFile === 'function') {
+          try {
+            const path = api.getPathForFile(file);
+            if (path) return normalizeLocalFilePath(path);
+          } catch (error) {
+            // 独立浏览器模式拿不到磁盘路径，继续走下面的兜底。
+          }
+        }
+        return normalizeLocalFilePath(file.path || file.fullPath || '');
+      }
+
       async function collectDroppedFiles(dataTransfer) {
         const items = Array.from(dataTransfer && dataTransfer.items ? dataTransfer.items : []);
         const entries = items
@@ -3573,6 +3648,13 @@ C D E F | G A B c |`;
         return files;
       }
 
+      function resolveDisplayImageSource(source) {
+        const resolvedAsset = resolveLocalImageSource(source);
+        if (resolvedAsset && resolvedAsset !== source) return resolvedAsset;
+        const localPath = getDisplayLocalFilePath(source);
+        return localPath ? localPathToFileUrl(localPath) : source;
+      }
+
       function resolveLocalImageSource(source) {
         if (!source || isExternalImageSource(source)) return source;
         const [pathOnly] = splitAssetSuffix(source);
@@ -3595,7 +3677,7 @@ C D E F | G A B c |`;
       function resolveLocalImages(root) {
         root.querySelectorAll('img').forEach((image) => {
           const original = image.getAttribute('data-md-src') || image.getAttribute('src') || '';
-          const resolved = resolveLocalImageSource(original);
+          const resolved = resolveDisplayImageSource(original);
           if (resolved && resolved !== original) {
             image.dataset.mdSrc = original;
             image.setAttribute('src', resolved);
@@ -3604,7 +3686,9 @@ C D E F | G A B c |`;
       }
 
       function isExternalImageSource(source) {
-        return /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(String(source || ''));
+        const value = String(source || '').trim();
+        if (isAbsoluteLocalPath(value) || /^file:/i.test(value)) return false;
+        return /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(value);
       }
 
       function splitAssetSuffix(path) {
@@ -3630,6 +3714,146 @@ C D E F | G A B c |`;
           parts.push(part);
         });
         return parts.join('/');
+      }
+
+      function normalizeLocalFilePath(path) {
+        let value = String(path || '').trim();
+        if (!value) return '';
+        if (/^file:/i.test(value)) {
+          try {
+            value = decodeURIComponent(new URL(value).pathname);
+          } catch (error) {
+            value = value.replace(/^file:\/+/i, '');
+          }
+        } else {
+          try {
+            value = decodeURIComponent(value);
+          } catch (error) {
+            // 路径里可能有普通百分号，无法解码时保留原值。
+          }
+        }
+        value = value.replace(/\\/g, '/').replace(/^\/([A-Za-z]:\/)/, '$1');
+        return value;
+      }
+
+      function normalizeMarkdownImagePath(path) {
+        let value = String(path || '').trim();
+        if (!value) return '';
+        if (/^file:/i.test(value)) value = normalizeLocalFilePath(value);
+        value = value.replace(/\\/g, '/');
+        if (/^(?:data:|blob:|https?:|\/\/|#)/i.test(value)) return value;
+        return value
+          .replace(/ /g, '%20')
+          .replace(/#/g, '%23')
+          .replace(/\?/g, '%3F')
+          .replace(/\(/g, '%28')
+          .replace(/\)/g, '%29');
+      }
+
+      function getMarkdownImageSource(image) {
+        if (!image) return '';
+        return normalizeMarkdownImagePath(image.getAttribute('data-md-src') || image.getAttribute('src') || image.currentSrc || '');
+      }
+
+      function getMarkdownImagePath(filePath) {
+        const localPath = normalizeLocalFilePath(filePath);
+        if (!localPath) return '';
+        const workspaceRoot = getCurrentWorkspaceRoot();
+        const workspaceRelative = workspaceRoot ? getRelativePathWithin(workspaceRoot, localPath) : '';
+        if (workspaceRelative) return normalizeMarkdownImagePath(workspaceRelative);
+        const baseDir = getCurrentMarkdownLocalDirectory();
+        const relative = baseDir ? getRelativeLocalPath(baseDir, localPath) : '';
+        return normalizeMarkdownImagePath(relative || localPath);
+      }
+
+      function getCurrentMarkdownLocalDirectory() {
+        const path = normalizeLocalFilePath(currentFilePath);
+        if (path && isAbsoluteLocalPath(path)) return getDirectoryName(path);
+        if (currentMarkdownDirectory && isAbsoluteLocalPath(currentMarkdownDirectory)) return currentMarkdownDirectory;
+        return '';
+      }
+
+      function getCurrentWorkspaceRoot() {
+        const root = normalizeLocalFilePath(currentWorkspaceRoot);
+        return root && isAbsoluteLocalPath(root) ? root : '';
+      }
+
+      function getRelativeLocalPath(baseDir, targetPath) {
+        const base = normalizeLocalFilePath(baseDir);
+        const target = normalizeLocalFilePath(targetPath);
+        if (!base || !target || !isAbsoluteLocalPath(base) || !isAbsoluteLocalPath(target)) return '';
+        const baseParts = base.split('/').filter(Boolean);
+        const targetParts = target.split('/').filter(Boolean);
+        if (!baseParts.length || !targetParts.length) return '';
+        if (/^[A-Za-z]:$/.test(baseParts[0]) && baseParts[0].toLowerCase() !== targetParts[0].toLowerCase()) return '';
+        let index = 0;
+        while (index < baseParts.length && index < targetParts.length && baseParts[index].toLowerCase() === targetParts[index].toLowerCase()) {
+          index += 1;
+        }
+        const up = baseParts.slice(index).map(() => '..');
+        const down = targetParts.slice(index);
+        return up.concat(down).join('/') || getBaseName(target);
+      }
+
+      function getRelativePathWithin(baseDir, targetPath) {
+        const relative = getRelativeLocalPath(baseDir, targetPath);
+        if (!relative || relative === '.' || relative.startsWith('../') || relative === '..') return '';
+        return relative;
+      }
+
+      function getDisplayLocalFilePath(source) {
+        const value = String(source || '').trim();
+        if (!value || /^(?:data:|blob:|https?:|\/\/|#)/i.test(value)) return '';
+        const [pathOnly, suffix] = splitAssetSuffix(value);
+        const localPath = normalizeLocalFilePath(pathOnly);
+        if (!localPath) return '';
+        if (isAbsoluteLocalPath(localPath)) return `${localPath}${suffix}`;
+        const candidates = uniqueValues([
+          joinLocalPath(getCurrentMarkdownLocalDirectory(), localPath),
+          joinLocalPath(getCurrentWorkspaceRoot(), localPath)
+        ]).filter(Boolean);
+        const existing = resolveExistingLocalPath(candidates);
+        if (existing) return `${existing}${suffix}`;
+        if (candidates.length) return `${candidates[0]}${suffix}`;
+        return '';
+      }
+
+      function joinLocalPath(baseDir, relativePath) {
+        const base = normalizeLocalFilePath(baseDir);
+        const relative = normalizeLocalFilePath(relativePath);
+        if (!base || !relative) return '';
+        return normalizeLocalFilePath(`${base}/${relative}`);
+      }
+
+      function resolveExistingLocalPath(candidates) {
+        const api = window.noteEasyApi;
+        if (api && typeof api.resolveExistingPath === 'function') {
+          try {
+            const found = api.resolveExistingPath(candidates);
+            if (found) return normalizeLocalFilePath(found);
+          } catch (error) {
+            // 浏览器模式没有本地文件存在性检查。
+          }
+        }
+        const baseDir = getCurrentMarkdownLocalDirectory();
+        if (!baseDir && candidates.length) return candidates[0];
+        return '';
+      }
+
+      function isAbsoluteLocalPath(path) {
+        const value = normalizeLocalFilePath(path);
+        return /^[A-Za-z]:\//.test(value) || value.startsWith('/');
+      }
+
+      function localPathToFileUrl(path) {
+        const [pathOnly, suffix] = splitAssetSuffix(normalizeLocalFilePath(path));
+        if (!pathOnly) return '';
+        const encodedPath = pathOnly
+          .split('/')
+          .map((part, index) => (index === 0 && /^[A-Za-z]:$/.test(part) ? part : encodeURIComponent(part)))
+          .join('/');
+        const prefix = /^[A-Za-z]:\//.test(pathOnly) ? 'file:///' : 'file://';
+        return `${prefix}${encodedPath}${suffix}`;
       }
 
       function resolveAssetPath(baseDir, relativePath) {
@@ -5072,6 +5296,13 @@ ${indentHtml(clone.innerHTML, 4)}
           localStorage.setItem('markdown-viewer-numbering-mode', normalized.mode);
         }
         currentFileName = meta.fileName || meta.name || currentFileName || sampleName;
+        const metaPath = normalizeLocalFilePath(meta.path || meta.filePath || '');
+        if (metaPath) {
+          currentFilePath = metaPath;
+          if (isAbsoluteLocalPath(metaPath)) currentMarkdownDirectory = getDirectoryName(metaPath);
+        }
+        const metaRoot = normalizeLocalFilePath(meta.rootPath || meta.workspaceRoot || meta.sourceRoot || '');
+        currentWorkspaceRoot = metaRoot && isAbsoluteLocalPath(metaRoot) ? metaRoot : '';
         input.value = normalized.content;
         fileName.textContent = currentFileName;
         fileDetail.textContent = meta.detail || '外部载入';

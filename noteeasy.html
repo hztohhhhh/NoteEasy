@@ -23,8 +23,8 @@
         <button type="button" class="primary" id="openFile" title="打开 Markdown 文件">
           <i data-lucide="folder-open"></i><span>打开</span>
         </button>
-        <button type="button" id="openRepository" title="选择笔记仓库">
-          <i data-lucide="folder-tree"></i><span>仓库</span>
+        <button type="button" id="openRepository" title="添加或管理工作区">
+          <i data-lucide="folder-tree"></i><span>工作区</span>
         </button>
         <button type="button" id="explorerToggle" title="显示或隐藏文件目录树">
           <i data-lucide="panel-left"></i><span>目录</span>
@@ -61,9 +61,9 @@
     </header>
 
     <main class="workspace" id="workspace">
-      <aside class="pane explorer-pane" aria-label="文件目录树">
+      <aside class="pane explorer-pane" aria-label="工作区目录树">
         <div class="pane-head">
-          <div class="pane-title"><i data-lucide="folder-tree"></i><span>文件</span></div>
+          <div class="pane-title"><i data-lucide="folder-tree"></i><span>工作区</span></div>
           <div class="pane-tools">
             <button type="button" id="newNoteButton" title="新建笔记"><i data-lucide="file-plus-2"></i></button>
             <button type="button" id="newFolderButton" title="新建文件夹"><i data-lucide="folder-plus"></i></button>
@@ -72,13 +72,13 @@
           </div>
         </div>
         <div class="repository-search">
-          <input id="treeSearch" type="search" placeholder="搜索笔记或文件名" autocomplete="off">
+          <input id="treeSearch" type="search" placeholder="搜索工作区、目录或文件" autocomplete="off">
         </div>
         <div class="file-tree" id="fileTree">
-          <div class="file-tree-empty">请选择一个文件夹作为笔记仓库</div>
+          <div class="file-tree-empty">请选择或添加一个工作区</div>
         </div>
       </aside>
-      <div class="explorer-resizer" id="explorerResizer" role="separator" aria-label="调整文件目录宽度" aria-orientation="vertical"></div>
+      <div class="explorer-resizer" id="explorerResizer" role="separator" aria-label="调整工作区宽度" aria-orientation="vertical"></div>
 
       <section class="document-frame-pane" aria-label="Markdown 编辑器">
         <div id="markcom-root" data-markcom-root></div>

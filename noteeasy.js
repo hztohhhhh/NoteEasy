@@ -37,7 +37,10 @@
   const toast = document.getElementById('noteToast');
 
   let rootPath = '';
+  let workspaceSources = [];
+  let workspaceRoot = null;
   let treeRoot = null;
+  let selectedSourceId = '';
   let selectedPath = '';
   let selectedType = '';
   let expandedTreePaths = new Set();
@@ -46,11 +49,13 @@
   let editorReady = Boolean(window.MarkCom);
   let autoSaveTimer = 0;
   let toastTimer = 0;
+  let workspaceMenu = null;
+  let workspaceMenuCloseHandler = null;
   let currentView = 'preview';
   const DirectoryFileModelClass = window.MarkData && window.MarkData.DirectoryFileDataModel;
   const DirectoryFileViewClass = window.MarkComViews && window.MarkComViews.DirectoryFileView;
   const directoryFileModel = DirectoryFileModelClass
-    ? new DirectoryFileModelClass({ source: api && api.isElectron ? 'local' : 'storage' })
+    ? new DirectoryFileModelClass({ source: api && api.isElectron ? 'workspace' : 'storage' })
     : null;
   const directoryFileView = DirectoryFileViewClass ? new DirectoryFileViewClass({
     root: fileTree,
@@ -65,6 +70,10 @@
     onSelect: handleDirectoryFileSelect,
     renderIcons: createIcons
   }) : null;
+  if (directoryFileView) {
+    directoryFileView.emptyText = '请选择或添加一个工作区';
+    directoryFileView.noMatchText = '没有匹配的工作区项目';
+  }
   if (directoryFileView && directoryFileModel) directoryFileView.connect(directoryFileModel);
 
   init();
@@ -78,7 +87,7 @@
   function bindEvents() {
     openFileButton.addEventListener('click', () => fileInput.click());
     fileInput.addEventListener('change', openLocalMarkdownFile);
-    openRepositoryButton.addEventListener('click', chooseRepository);
+    openRepositoryButton.addEventListener('click', openWorkspaceMenu);
     explorerToggle.addEventListener('click', toggleExplorer);
     explorerResizer.addEventListener('pointerdown', startExplorerResize);
     exportHtmlButton.addEventListener('click', () => runEditorCommand('exportHtml'));
@@ -88,7 +97,6 @@
     numberingMode.addEventListener('change', () => {
       const tab = getActiveTab();
       if (tab && tab.numberingMode !== numberingMode.value) {
-        pinTab(tab.id, { render: false });
         tab.numberingMode = numberingMode.value;
         tab.dirty = true;
         renderTabs();
@@ -145,6 +153,9 @@
     if (api && typeof api.onRepositoryChanged === 'function') {
       api.onRepositoryChanged(() => refreshFileTree(false));
     }
+    if (api && typeof api.onWorkspaceChanged === 'function') {
+      api.onWorkspaceChanged(() => refreshFileTree(false));
+    }
   }
 
   async function handleMarkComEvent(message) {
@@ -176,6 +187,24 @@
 
     try {
       const settings = await api.getSettings();
+      workspaceSources = normalizeWorkspaceSources(settings.workspaceSources, settings);
+      if (workspaceSources.length) {
+        const lastSource = findSourceById(settings.lastSourceId) || findSourceForPath(settings.lastFilePath) || workspaceSources[0];
+        selectedSourceId = lastSource ? lastSource.id : '';
+        updateRootPathFromSources(lastSource);
+        selectedPath = 'workspace:';
+        selectedType = 'folder';
+        expandedTreePaths = new Set(['workspace:'].concat(workspaceSources.map(getSourceRootPath)));
+        fileDetail.textContent = getWorkspaceDetail();
+        await refreshFileTree();
+        if (settings.lastFilePath) {
+          await openNote(settings.lastFilePath, { sourceId: selectedSourceId, preview: false });
+        }
+        if (!Array.isArray(settings.workspaceSources)) {
+          await persistWorkspaceSources({ lastFilePath: settings.lastFilePath || '', lastSourceId: selectedSourceId });
+        }
+        return;
+      }
       rootPath = settings.rootPath || '';
       if (rootPath) {
         fileDetail.textContent = rootPath;
@@ -189,6 +218,174 @@
     } catch (error) {
       showToast(error.message || '初始化失败');
     }
+  }
+
+  async function openWorkspaceMenu(event) {
+    if (event && typeof event.preventDefault === 'function') event.preventDefault();
+    if (!api || !api.isElectron) {
+      showToast('工作区需要通过 Electron 启动 NoteEasy');
+      return;
+    }
+    if (workspaceMenu) {
+      closeWorkspaceMenu();
+      return;
+    }
+    renderWorkspaceMenu();
+  }
+
+  function renderWorkspaceMenu() {
+    closeWorkspaceMenu();
+    const rect = openRepositoryButton.getBoundingClientRect();
+    workspaceMenu = document.createElement('div');
+    workspaceMenu.className = 'workspace-menu';
+    workspaceMenu.setAttribute('role', 'menu');
+    workspaceMenu.innerHTML = `
+      <div class="workspace-menu-section">
+        <div class="workspace-menu-title">添加工作区</div>
+        <button type="button" data-workspace-action="local"><i data-lucide="folder-plus"></i><span>本地目录</span></button>
+        <button type="button" data-workspace-action="git"><i data-lucide="git-branch"></i><span>Git 仓库</span></button>
+      </div>
+      <form class="workspace-menu-section workspace-network-form" data-workspace-network>
+        <div class="workspace-menu-title">网络文件</div>
+        <input name="url" type="url" placeholder="https://example.com/readme.md" autocomplete="off" required>
+        <input name="name" type="text" placeholder="名称（可选）" autocomplete="off">
+        <button type="submit" class="primary"><i data-lucide="cloud"></i><span>添加网络来源</span></button>
+      </form>
+      <div class="workspace-menu-section">
+        <div class="workspace-menu-title">当前工作区</div>
+        <div class="workspace-source-list">
+          ${renderWorkspaceSourceMenuItems()}
+        </div>
+      </div>`;
+    document.body.appendChild(workspaceMenu);
+    const menuRect = workspaceMenu.getBoundingClientRect();
+    const left = Math.min(window.innerWidth - menuRect.width - 12, Math.max(12, rect.left));
+    const top = Math.min(window.innerHeight - menuRect.height - 12, rect.bottom + 8);
+    workspaceMenu.style.left = `${left}px`;
+    workspaceMenu.style.top = `${top}px`;
+    workspaceMenu.addEventListener('click', handleWorkspaceMenuClick);
+    workspaceMenu.addEventListener('submit', handleWorkspaceMenuSubmit);
+    workspaceMenuCloseHandler = (closeEvent) => {
+      if (!workspaceMenu) return;
+      if (workspaceMenu.contains(closeEvent.target) || openRepositoryButton.contains(closeEvent.target)) return;
+      closeWorkspaceMenu();
+    };
+    window.setTimeout(() => document.addEventListener('pointerdown', workspaceMenuCloseHandler), 0);
+    createIcons();
+  }
+
+  function renderWorkspaceSourceMenuItems() {
+    if (!workspaceSources.length) return '<div class="workspace-menu-empty">暂无工作区</div>';
+    return workspaceSources.map((source) => `
+      <div class="workspace-source-item">
+        <div>
+          <div class="workspace-source-name">${escapeHtml(source.name)}</div>
+          <div class="workspace-source-meta">${escapeHtml(source.type)} · ${escapeHtml(source.rootPath || source.url || '')}</div>
+        </div>
+        <button type="button" data-workspace-remove="${escapeAttr(source.id)}" title="移除工作区"><i data-lucide="x"></i></button>
+      </div>
+    `).join('');
+  }
+
+  async function handleWorkspaceMenuClick(event) {
+    const actionButton = event.target.closest('[data-workspace-action]');
+    if (actionButton) {
+      const action = actionButton.dataset.workspaceAction;
+      await addWorkspaceFolder(action);
+      return;
+    }
+    const removeButton = event.target.closest('[data-workspace-remove]');
+    if (removeButton) {
+      await removeWorkspaceSource(removeButton.dataset.workspaceRemove);
+    }
+  }
+
+  async function handleWorkspaceMenuSubmit(event) {
+    const form = event.target.closest('[data-workspace-network]');
+    if (!form) return;
+    event.preventDefault();
+    const url = String((new FormData(form)).get('url') || '').trim();
+    const name = String((new FormData(form)).get('name') || '').trim();
+    if (!url) return;
+    try {
+      const source = await api.createNetworkWorkspace(url, name);
+      await addWorkspaceSource(source);
+      closeWorkspaceMenu();
+    } catch (error) {
+      showToast(error.message || '网络工作区添加失败');
+    }
+  }
+
+  async function addWorkspaceFolder(type) {
+    if (!['local', 'git'].includes(type)) return;
+    try {
+      const result = await api.chooseWorkspaceFolder(type);
+      if (!result || result.canceled || !result.source) return;
+      await addWorkspaceSource(result.source);
+      closeWorkspaceMenu();
+    } catch (error) {
+      showToast(error.message || '工作区添加失败');
+    }
+  }
+
+  function closeWorkspaceMenu() {
+    if (workspaceMenuCloseHandler) {
+      document.removeEventListener('pointerdown', workspaceMenuCloseHandler);
+      workspaceMenuCloseHandler = null;
+    }
+    if (workspaceMenu) {
+      workspaceMenu.removeEventListener('click', handleWorkspaceMenuClick);
+      workspaceMenu.removeEventListener('submit', handleWorkspaceMenuSubmit);
+      workspaceMenu.remove();
+      workspaceMenu = null;
+    }
+  }
+
+  async function addWorkspaceSource(sourceInput) {
+    const source = normalizeWorkspaceSource(sourceInput);
+    const sourceKey = getWorkspaceSourceKey(source);
+    const existingIndex = workspaceSources.findIndex((item) => getWorkspaceSourceKey(item) === sourceKey || item.id === source.id);
+    if (existingIndex >= 0) {
+      workspaceSources[existingIndex] = Object.assign({}, workspaceSources[existingIndex], source, {
+        id: workspaceSources[existingIndex].id || source.id
+      });
+    } else {
+      workspaceSources.push(source);
+    }
+    workspaceSources = dedupeWorkspaceSources(workspaceSources);
+    const activeSource = workspaceSources.find((item) => getWorkspaceSourceKey(item) === sourceKey) || source;
+    selectedSourceId = activeSource.id;
+    selectedPath = getSourceRootPath(activeSource);
+    selectedType = 'folder';
+    expandedTreePaths.add('workspace:');
+    expandedTreePaths.add(selectedPath);
+    updateRootPathFromSources(activeSource);
+    await persistWorkspaceSources({ lastSourceId: activeSource.id, lastFilePath: '' });
+    await refreshFileTree(false);
+    setSaveState('已添加工作区');
+  }
+
+  async function removeWorkspaceSource(sourceId = '') {
+    if (!workspaceSources.length) {
+      showToast('当前没有可移除的工作区');
+      return;
+    }
+    const current = findSourceById(sourceId) || findSourceById(selectedSourceId) || workspaceSources[0];
+    const index = workspaceSources.findIndex((source) => source.id === current.id);
+    if (index < 0 || index >= workspaceSources.length) {
+      showToast('工作区序号无效');
+      return;
+    }
+    const [removed] = workspaceSources.splice(index, 1);
+    closeTabsBySource(removed.id);
+    selectedSourceId = workspaceSources[0] ? workspaceSources[0].id : '';
+    selectedPath = workspaceSources[0] ? getSourceRootPath(workspaceSources[0]) : '';
+    selectedType = selectedPath ? 'folder' : '';
+    updateRootPathFromSources();
+    await persistWorkspaceSources({ lastSourceId: selectedSourceId, lastFilePath: '' });
+    await refreshFileTree(false);
+    if (workspaceMenu) renderWorkspaceMenu();
+    setSaveState('已移除工作区');
   }
 
   async function chooseRepository() {
@@ -214,7 +411,7 @@
     if (!file) return;
     try {
       const content = await readFileAsText(file);
-      const replacement = tabs.find((item) => !item.pinned && !item.dirty);
+      const replacement = getReusablePreviewTab();
       const tab = replacement || {
         id: createId()
       };
@@ -250,7 +447,171 @@
     });
   }
 
+  function createWorkspaceSourceId(type, key) {
+    const text = `${type}:${key || Date.now()}`;
+    let hash = 0;
+    for (let index = 0; index < text.length; index += 1) {
+      hash = ((hash << 5) - hash) + text.charCodeAt(index);
+      hash |= 0;
+    }
+    return `${type}-${Math.abs(hash).toString(36)}`;
+  }
+
+  function normalizeWorkspaceType(type, source = {}) {
+    const value = String(type || source.type || '').toLowerCase();
+    if (['local', 'git', 'network'].includes(value)) return value;
+    return source.url ? 'network' : 'local';
+  }
+
+  function normalizeWorkspaceSource(source = {}) {
+    const type = normalizeWorkspaceType(source.type, source);
+    const root = String(source.rootPath || '');
+    const url = String(source.url || '');
+    const key = root || url || source.id || type;
+    const fallbackName = root ? getBaseName(root) || root : url.split(/[/?#]/).filter(Boolean).pop() || '网络文件';
+    return {
+      id: source.id || createWorkspaceSourceId(type, key),
+      type,
+      name: source.name || fallbackName,
+      rootPath: root,
+      url,
+      writable: source.writable !== false && (type === 'local' || type === 'git'),
+      meta: Object.assign({}, source.meta || {})
+    };
+  }
+
+  function normalizeWorkspaceSources(sources, settings = {}) {
+    const normalized = [];
+    const input = Array.isArray(sources) ? sources : [];
+    input.forEach((source) => {
+      const next = normalizeWorkspaceSource(source);
+      if (next.rootPath || next.url) normalized.push(next);
+    });
+    if (!normalized.length && settings.rootPath) {
+      normalized.push(normalizeWorkspaceSource({
+        type: 'local',
+        name: getBaseName(settings.rootPath) || settings.rootPath,
+        rootPath: settings.rootPath
+      }));
+    }
+    return dedupeWorkspaceSources(normalized);
+  }
+
+  function dedupeWorkspaceSources(sources) {
+    const seen = new Set();
+    return sources.map(normalizeWorkspaceSource).filter((source) => {
+      const key = getWorkspaceSourceKey(source);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function getWorkspaceSourceKey(source) {
+    const value = source && (source.rootPath || source.url || source.id) ? (source.rootPath || source.url || source.id) : '';
+    return String(value || '').replace(/\\/g, '/').toLowerCase();
+  }
+
+  function getSourceRootPath(source) {
+    if (!source) return '';
+    return source.rootPath || `workspace:${source.id}`;
+  }
+
+  function isWritableSource(source) {
+    return Boolean(source && source.writable && source.rootPath && (source.type === 'local' || source.type === 'git'));
+  }
+
+  function findSourceById(sourceId) {
+    return workspaceSources.find((source) => source.id === sourceId) || null;
+  }
+
+  function findSourceForPath(targetPath) {
+    const value = String(targetPath || '');
+    if (!value || value === 'workspace:') return null;
+    return workspaceSources.find((source) => {
+      const sourceRoot = getSourceRootPath(source);
+      if (value === sourceRoot || value === source.url) return true;
+      if (source.rootPath && (value.startsWith(`${source.rootPath}\\`) || value.startsWith(`${source.rootPath}/`))) return true;
+      return false;
+    }) || null;
+  }
+
+  function getNodeSource(node) {
+    const meta = node && node.meta ? node.meta : {};
+    return findSourceById(meta.workspaceId) || findSourceForPath(node && node.path);
+  }
+
+  function updateRootPathFromSources(preferredSource = null) {
+    const source = preferredSource || findSourceById(selectedSourceId) || workspaceSources.find((item) => item.rootPath) || workspaceSources[0] || null;
+    rootPath = source && source.rootPath ? source.rootPath : '';
+    if (source) selectedSourceId = source.id;
+    return source;
+  }
+
+  function getWorkspaceDetail() {
+    if (!workspaceSources.length) return '未加载工作区';
+    const localCount = workspaceSources.filter((source) => source.type === 'local').length;
+    const gitCount = workspaceSources.filter((source) => source.type === 'git').length;
+    const networkCount = workspaceSources.filter((source) => source.type === 'network').length;
+    return `工作区 ${workspaceSources.length} 个 · 本地 ${localCount} · Git ${gitCount} · 网络 ${networkCount}`;
+  }
+
+  function getSourceLabel(source) {
+    if (!source) return getWorkspaceDetail();
+    if (source.type === 'network') return `${source.name} · 网络只读`;
+    if (source.type === 'git') return `${source.name} · Git 仓库`;
+    return `${source.name} · 本地目录`;
+  }
+
+  async function persistWorkspaceSources(extra = {}) {
+    if (!api || typeof api.setSettings !== 'function') return;
+    updateRootPathFromSources();
+    await api.setSettings(Object.assign({
+      workspaceSources,
+      rootPath
+    }, extra));
+  }
+
+  function getSelectedSource() {
+    return findSourceById(selectedSourceId) || findSourceForPath(selectedPath) || workspaceSources[0] || null;
+  }
+
+  function getSelectedWritableSource() {
+    const source = getSelectedSource() || workspaceSources.find(isWritableSource) || null;
+    if (!isWritableSource(source)) return null;
+    return source;
+  }
+
   async function refreshFileTree(showError = true) {
+    if (api && typeof api.listWorkspace === 'function') {
+      if (!workspaceSources.length) {
+        workspaceRoot = null;
+        treeRoot = null;
+        if (directoryFileModel) directoryFileModel.setRoot(null);
+        fileTree.innerHTML = '<div class="file-tree-empty">请选择或添加一个工作区</div>';
+        fileDetail.textContent = '未加载工作区';
+        return;
+      }
+      try {
+        workspaceRoot = await api.listWorkspace(workspaceSources);
+        treeRoot = workspaceRoot;
+        if (!expandedTreePaths.size) expandedTreePaths = new Set(['workspace:'].concat(workspaceSources.map(getSourceRootPath)));
+        if (directoryFileModel) {
+          directoryFileModel.setSource('workspace', { workspaceSources });
+          directoryFileModel.setTree(workspaceRoot, { workspaceSources });
+          if (directoryFileView && directoryFileView.expandedPaths) {
+            directoryFileView.expandedPaths.add('workspace:');
+            workspaceSources.forEach((source) => directoryFileView.expandedPaths.add(getSourceRootPath(source)));
+          }
+        }
+        fileDetail.textContent = getWorkspaceDetail();
+        renderFileTree();
+      } catch (error) {
+        if (showError) showToast(error.message || '工作区加载失败');
+        fileTree.innerHTML = '<div class="file-tree-empty">工作区加载失败</div>';
+      }
+      return;
+    }
     if (!api || !rootPath) {
       if (directoryFileModel) directoryFileModel.setRoot(null);
       fileTree.innerHTML = '<div class="file-tree-empty">请选择一个文件夹作为笔记仓库</div>';
@@ -324,7 +685,7 @@
   }
 
   async function handleDirectoryFileSelect(node) {
-    await selectDirectoryFile(node && node.path ? node.path : '', node && node.type ? node.type : '');
+    await selectDirectoryFile(node && node.path ? node.path : '', node && node.type ? node.type : '', node);
   }
 
   function toggleFallbackFolder(path) {
@@ -336,13 +697,18 @@
     }
   }
 
-  async function selectDirectoryFile(path, type) {
+  async function selectDirectoryFile(path, type, node = null) {
     selectedPath = path || '';
     selectedType = type || '';
+    const source = getNodeSource(node) || findSourceForPath(selectedPath) || findSourceById(selectedSourceId);
+    if (source) {
+      selectedSourceId = source.id;
+      updateRootPathFromSources(source);
+    }
     if (directoryFileModel && selectedPath) directoryFileModel.select(selectedPath, selectedType);
     renderFileTree();
     if (selectedType === 'file') {
-      await openNote(selectedPath);
+      await openNote(selectedPath, { sourceId: selectedSourceId });
     }
   }
 
@@ -352,6 +718,14 @@
     event.preventDefault();
     selectedPath = row.dataset.path || '';
     selectedType = row.dataset.type || '';
+    const node = directoryFileModel && typeof directoryFileModel.findNode === 'function'
+      ? directoryFileModel.findNode(selectedPath)
+      : null;
+    const source = getNodeSource(node) || findSourceForPath(selectedPath);
+    if (source) {
+      selectedSourceId = source.id;
+      updateRootPathFromSources(source);
+    }
     renderFileTree();
     const command = window.prompt('输入操作：rename / move / delete / show', 'rename');
     if (command === 'rename') await renameSelectedItem();
@@ -361,6 +735,35 @@
   }
 
   async function createItem(type) {
+    if (api && typeof api.createWorkspaceNote === 'function') {
+      if (!workspaceSources.length) {
+        await openWorkspaceMenu();
+        if (!workspaceSources.length) return;
+      }
+      const source = getSelectedWritableSource();
+      if (!source) {
+        showToast('请选择一个可写的本地目录或 Git 工作区');
+        return;
+      }
+      selectedSourceId = source.id;
+      updateRootPathFromSources(source);
+      const parentDir = getSelectedDirectory();
+      const name = window.prompt(type === 'file' ? '新建笔记名称' : '新建文件夹名称', type === 'file' ? 'Untitled.md' : 'New Folder');
+      if (!name) return;
+      try {
+        const result = type === 'file'
+          ? await api.createWorkspaceNote(source, parentDir, name)
+          : await api.createWorkspaceFolder(source, parentDir, name);
+        selectedPath = result.path;
+        selectedType = type === 'file' ? 'file' : 'folder';
+        if (parentDir) expandedTreePaths.add(parentDir);
+        await refreshFileTree(false);
+        if (type === 'file') await openNote(result.path, { sourceId: source.id });
+      } catch (error) {
+        showToast(error.message || '创建失败');
+      }
+      return;
+    }
     if (!api || !rootPath) {
       await chooseRepository();
       if (!rootPath) return;
@@ -375,7 +778,7 @@
       selectedPath = result.path;
       selectedType = type === 'file' ? 'file' : 'folder';
       if (parentDir) expandedTreePaths.add(parentDir);
-      await refreshFileTree(false);
+      if (options.refresh !== false) await refreshFileTree(false);
       if (type === 'file') await openNote(result.path);
     } catch (error) {
       showToast(error.message || '创建失败');
@@ -383,6 +786,26 @@
   }
 
   async function renameSelectedItem() {
+    if (api && typeof api.renameWorkspaceItem === 'function') {
+      const source = getSelectedSource();
+      if (!selectedPath || selectedPath === 'workspace:' || selectedPath === getSourceRootPath(source)) return;
+      if (!isWritableSource(source)) {
+        showToast('当前工作区来源只读，不能重命名');
+        return;
+      }
+      const currentName = getBaseName(selectedPath);
+      const nextName = window.prompt('重命名', currentName);
+      if (!nextName || nextName === currentName) return;
+      try {
+        const result = await api.renameWorkspaceItem(source, selectedPath, nextName);
+        updateTabsAfterPathChange(result.oldPath, result.path, result.name);
+        selectedPath = result.path;
+        await refreshFileTree(false);
+      } catch (error) {
+        showToast(error.message || '重命名失败');
+      }
+      return;
+    }
     if (!api || !selectedPath || selectedPath === rootPath) return;
     const currentName = getBaseName(selectedPath);
     const nextName = window.prompt('重命名', currentName);
@@ -391,13 +814,32 @@
       const result = await api.renameItem(selectedPath, nextName, rootPath);
       updateTabsAfterPathChange(result.oldPath, result.path, result.name);
       selectedPath = result.path;
-      await refreshFileTree(false);
+      if (options.refresh !== false) await refreshFileTree(false);
     } catch (error) {
       showToast(error.message || '重命名失败');
     }
   }
 
   async function moveSelectedItem() {
+    if (api && typeof api.moveWorkspaceItem === 'function') {
+      const source = getSelectedSource();
+      if (!selectedPath || selectedPath === 'workspace:' || selectedPath === getSourceRootPath(source)) return;
+      if (!isWritableSource(source)) {
+        showToast('当前工作区来源只读，不能移动');
+        return;
+      }
+      const target = window.prompt('移动到工作区内相对目录，例如 docs 或 docs/spec', '');
+      if (target === null) return;
+      try {
+        const result = await api.moveWorkspaceItem(source, selectedPath, target || source.rootPath);
+        updateTabsAfterPathChange(result.oldPath || selectedPath, result.path, getBaseName(result.path));
+        selectedPath = result.path;
+        await refreshFileTree(false);
+      } catch (error) {
+        showToast(error.message || '移动失败');
+      }
+      return;
+    }
     if (!api || !selectedPath || selectedPath === rootPath) return;
     const target = window.prompt('移动到仓库内相对目录，例如 docs 或 docs/spec', '');
     if (target === null) return;
@@ -412,6 +854,25 @@
   }
 
   async function deleteSelectedItem() {
+    if (api && typeof api.deleteWorkspaceItem === 'function') {
+      const source = getSelectedSource();
+      if (!selectedPath || selectedPath === 'workspace:' || selectedPath === getSourceRootPath(source)) return;
+      if (!isWritableSource(source)) {
+        showToast('当前工作区来源只读，不能删除');
+        return;
+      }
+      if (!window.confirm(`确定删除 ${getBaseName(selectedPath)}？`)) return;
+      try {
+        await api.deleteWorkspaceItem(source, selectedPath);
+        closeTabsUnderPath(selectedPath);
+        selectedPath = getSourceRootPath(source);
+        selectedType = 'folder';
+        await refreshFileTree(false);
+      } catch (error) {
+        showToast(error.message || '删除失败');
+      }
+      return;
+    }
     if (!api || !selectedPath || selectedPath === rootPath) return;
     if (!window.confirm(`确定删除 ${getBaseName(selectedPath)}？`)) return;
     try {
@@ -426,6 +887,12 @@
   }
 
   function showSelectedItem() {
+    const source = getSelectedSource();
+    if (!selectedPath || selectedPath === 'workspace:') return;
+    if (source && source.type === 'network') {
+      showToast('网络工作区文件没有本地目录可显示');
+      return;
+    }
     if (api && selectedPath) {
       api.showItem(selectedPath);
     }
@@ -434,10 +901,25 @@
   async function openNote(path, options = {}) {
     if (!api || !path) return;
     captureActiveEditorContent();
+    const source = findSourceById(options.sourceId) || getNodeSource(options.node) || findSourceForPath(path) || findSourceById(selectedSourceId);
+    if (api.readWorkspaceNote && !source) {
+      showToast('找不到文件所属的工作区来源');
+      return;
+    }
+    if (source) {
+      selectedSourceId = source.id;
+      updateRootPathFromSources(source);
+    }
 
-    const existing = tabs.find((tab) => tab.path === path);
+    const existing = tabs.find((tab) => tab.path === path && (!source || !tab.sourceId || tab.sourceId === source.id));
     if (existing) {
       activeTabId = existing.id;
+      selectedSourceId = existing.sourceId || selectedSourceId;
+      if (source && !existing.sourceId) {
+        existing.sourceId = source.id;
+        existing.sourceType = source.type;
+        existing.readonly = !isWritableSource(source);
+      }
       if (options.pin) {
         existing.pinned = true;
         existing.preview = false;
@@ -449,15 +931,20 @@
     }
 
     try {
-      const note = await api.readNote(path, rootPath);
+      const note = api.readWorkspaceNote && source
+        ? await api.readWorkspaceNote(source, path)
+        : await api.readNote(path, rootPath);
       if (!note || note.missing) {
         showToast('文件不存在或已被删除');
         await refreshFileTree(false);
         return;
       }
       const replacement = options.preview !== false
-        ? tabs.find((item) => !item.pinned && !item.dirty)
+        ? getReusablePreviewTab()
         : null;
+      if (replacement && replacement.dirty && !replacement.readonly && replacement.id === activeTabId) {
+        await saveActiveTab({ refresh: false, render: false });
+      }
       const tab = replacement || {
         id: createId(),
       };
@@ -470,7 +957,10 @@
         pinned: Boolean(options.pin),
         preview: !options.pin,
         modifiedAt: note.modifiedAt || Date.now(),
-        numberingMode: ''
+        numberingMode: '',
+        sourceId: note.workspaceId || (source && source.id) || '',
+        sourceType: note.sourceType || (source && source.type) || '',
+        readonly: Boolean(note.readonly || (source && !isWritableSource(source)))
       });
       if (!replacement) tabs.push(tab);
       activeTabId = tab.id;
@@ -480,7 +970,7 @@
       renderTabs();
       renderFileTree();
       updateFileMeta(tab);
-      await api.setSettings({ lastFilePath: tab.path });
+      await api.setSettings({ lastFilePath: tab.path, lastSourceId: tab.sourceId || selectedSourceId });
     } catch (error) {
       showToast(error.message || '文件读取失败');
     }
@@ -489,13 +979,15 @@
   function applyActiveTabToEditor() {
     const tab = getActiveTab();
     if (!editorReady || !tab) return;
+    const source = findSourceById(tab.sourceId) || findSourceForPath(tab.path);
     updateFileMeta(tab);
     postEditorMessage('markcom:setMarkdown', {
       markdown: tab.content,
       meta: {
         fileName: tab.name,
         path: tab.path,
-        detail: 'NoteEasy 笔记',
+        rootPath: source && source.rootPath ? source.rootPath : rootPath,
+        detail: getSourceLabel(source),
         updatedText: tab.dirty ? '未保存' : '已保存',
         numberingMode: tab.numberingMode || undefined
       }
@@ -527,7 +1019,6 @@
 
     tab.content = message.markdown;
     tab.dirty = tab.content !== tab.savedContent;
-    if (tab.dirty) pinTab(tab.id, { render: false });
     renderTabs();
     updateFileMeta(tab);
     updateEditorStats(message.document);
@@ -544,7 +1035,6 @@
         const markdown = markCom.getMarkdown();
         tab.content = markdown;
         tab.dirty = markdown !== tab.savedContent;
-        if (tab.dirty) pinTab(tab.id, { render: false });
       }
     } catch (error) {
       // Cross-context access can fail in strict browser file mode; postMessage keeps autosave updated.
@@ -575,14 +1065,19 @@
   function scheduleAutoSave() {
     window.clearTimeout(autoSaveTimer);
     const tab = getActiveTab();
-    if (!tab || !tab.dirty || !api) return;
+    if (!tab || !tab.dirty || tab.readonly || !api) return;
     autoSaveTimer = window.setTimeout(saveActiveTab, AUTOSAVE_DELAY);
   }
 
-  async function saveActiveTab() {
+  async function saveActiveTab(options = {}) {
     const tab = getActiveTab();
     if (!tab || !api) return;
     captureActiveEditorContent();
+    if (tab.readonly) {
+      setSaveState('只读文件不能保存');
+      showToast('当前工作区来源只读，请导出 MD 后另存');
+      return;
+    }
     if (!tab.path) {
       setSaveState('本地文件需用 MD 导出保存');
       return;
@@ -590,13 +1085,19 @@
     try {
       setSaveState('保存中');
       const saveContent = await getEditorMarkdownForSave(tab);
-      const result = await api.saveNote(tab.path, saveContent, rootPath);
+      const source = findSourceById(tab.sourceId) || findSourceForPath(tab.path) || getSelectedSource();
+      const result = api.saveWorkspaceNote && source
+        ? await api.saveWorkspaceNote(source, tab.path, saveContent)
+        : await api.saveNote(tab.path, saveContent, rootPath);
       tab.savedContent = tab.content;
       tab.dirty = false;
       tab.modifiedAt = result.modifiedAt || Date.now();
-      renderTabs();
-      updateFileMeta(tab);
+      if (options.render !== false) {
+        renderTabs();
+        updateFileMeta(tab);
+      }
       setSaveState('已保存');
+      await api.setSettings({ lastFilePath: tab.path, lastSourceId: tab.sourceId || (source && source.id) || '' });
       await refreshFileTree(false);
     } catch (error) {
       setSaveState('保存失败');
@@ -617,6 +1118,8 @@
         dirty: item.dirty,
         pinned: Boolean(item.pinned),
         preview: !item.pinned,
+        sourceId: item.sourceId || '',
+        readonly: Boolean(item.readonly),
         numberingMode: item.numberingMode || ''
       }))
     });
@@ -629,16 +1132,19 @@
   async function activateTab(tabId) {
     const tab = tabs.find((item) => item.id === tabId);
     if (!tab) return;
+    if (activeTabId === tab.id) return;
     captureActiveEditorContent();
     activeTabId = tab.id;
     selectedPath = tab.path;
     selectedType = tab.path ? 'file' : '';
+    selectedSourceId = tab.sourceId || selectedSourceId;
+    updateRootPathFromSources(findSourceById(selectedSourceId));
     if (tab.numberingMode) numberingMode.value = tab.numberingMode;
     applyActiveTabToEditor();
     renderTabs();
     renderFileTree();
     if (api && tab.path) {
-      await api.setSettings({ lastFilePath: tab.path });
+      await api.setSettings({ lastFilePath: tab.path, lastSourceId: tab.sourceId || selectedSourceId });
     }
   }
 
@@ -671,6 +1177,14 @@
     applyActiveTabToEditor();
   }
 
+  function closeTabsBySource(sourceId) {
+    if (!sourceId) return;
+    tabs = tabs.filter((tab) => tab.sourceId !== sourceId);
+    activeTabId = tabs[0] ? tabs[0].id : '';
+    renderTabs();
+    applyActiveTabToEditor();
+  }
+
   function updateTabsAfterPathChange(oldPath, nextPath, nextName) {
     tabs.forEach((tab) => {
       if (tab.path === oldPath || tab.path.startsWith(`${oldPath}\\`) || tab.path.startsWith(`${oldPath}/`)) {
@@ -685,8 +1199,16 @@
     return tabs.find((tab) => tab.id === activeTabId) || null;
   }
 
+  function getReusablePreviewTab() {
+    const active = getActiveTab();
+    if (active && !active.pinned) return active;
+    return tabs.find((tab) => !tab.pinned) || null;
+  }
+
   function getSelectedDirectory() {
-    if (!selectedPath || selectedPath === rootPath) return rootPath;
+    const source = getSelectedWritableSource() || getSelectedSource();
+    const sourceRoot = source && source.rootPath ? source.rootPath : rootPath;
+    if (!selectedPath || selectedPath === 'workspace:' || selectedPath === sourceRoot || selectedPath === getSourceRootPath(source)) return sourceRoot;
     return selectedType === 'folder' ? selectedPath : getDirectoryName(selectedPath);
   }
 
@@ -780,6 +1302,14 @@
   }
 
   function updateFileMeta(tab) {
+    const source = tab ? (findSourceById(tab.sourceId) || findSourceForPath(tab.path)) : getSelectedSource();
+    fileName.textContent = tab ? tab.name : 'NoteEasy';
+    fileDetail.textContent = tab ? getSourceLabel(source) : getWorkspaceDetail();
+    currentFileText.textContent = tab ? tab.name : '未加载文件';
+    currentPathText.textContent = tab ? tab.path : (rootPath || '本地页面');
+    sizeText.textContent = formatBytes(new Blob([tab ? tab.content : '']).size);
+    updatedText.textContent = tab && tab.readonly ? '只读' : (tab && tab.dirty ? '未保存' : '本地页面');
+    return;
     fileName.textContent = tab ? tab.name : 'NoteEasy';
     fileDetail.textContent = rootPath || '未加载文件';
     currentFileText.textContent = tab ? tab.name : '未加载文件';
@@ -833,8 +1363,8 @@
     if (window.lucide) {
       window.lucide.createIcons({
         attrs: {
-          width: 20,
-          height: 20,
+          width: 18,
+          height: 18,
           'stroke-width': 2
         }
       });
