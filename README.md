@@ -254,50 +254,7 @@ node --check noteeasy.js
 7. 打开 `image-reference-tests/root-relative-image.md`，确认相对路径图片正常显示。
 8. 验证 HTML、PDF 和 Markdown 导出。
 
-## 打包
 
-生成未安装的应用目录：
-
-```bash
-npm run pack
-```
-
-生成 Windows 安装包：
-
-```bash
-npm run dist:win
-```
-
-其他平台：
-
-```bash
-npm run dist:mac
-npm run dist:linux
-```
-
-构建产物默认写入 `release/`，该目录不会提交到 Git。
-
-## Git 提交范围
-
-仓库应提交：
-
-- HTML、CSS 和 JavaScript 源码
-- `package.json` 与 `package-lock.json`
-- `vendor/` 本地运行依赖
-- `assets/` 图标
-- 测试 Markdown 和测试图片
-- README 与 LICENSE
-
-仓库不应提交：
-
-- `node_modules/`
-- `release/`
-- `release-check/`
-- `dist/`
-- Electron 可执行文件
-- `.asar`、安装包和压缩包
-
-这些内容已经由 `.gitignore` 排除。
 
 ## License
 
